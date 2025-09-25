@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Günlük Kar Takip</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.0.0/firebase-app-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.0.0/firebase-database-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .section { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .input-group { margin: 10px 0; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, button { padding: 8px; margin: 5px; border: 1px solid #ccc; border-radius: 4px; }
+        button { background: #007bff; color: white; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .stat-card { background: #f8f9fa; padding: 15px; border-radius: 5px; text-align: center; }
+        .chart-container { width: 100%; height: 400px; margin: 20px 0; }
+        .tabs { display: flex; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; background: #e9ecef; margin-right: 5px; cursor: pointer; border-radius: 5px 5px 0 0; }
+        .tab.active { background: #007bff; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .error { color: red; font-size: 12px; }
+        .success { color: green; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Günlük Kar Takip Paneli</h1>
+        <!-- Ayarlar -->
+        <div class="section">
+            <h3>Günlük Hedef</h3>
+            <input type="number" id="dailyTarget" placeholder="50" style="width:80px;"> TL
+            <button onclick="saveSettings()">Kaydet</button>
+        </div>
+
+        <!-- Kar Girişi -->
+        <div class="section">
+            <h3>Bugünkü Kar Girişi</h3>
+            <div class="input-group">
+                <label>Kar Miktarı (TL):</label>
+                <input type="number" id="todayProfit" step="0.01" placeholder="0">
+                <button onclick="saveTodayProfit()">Kaydet</button>
+            </div>
+            <div id="todayStatus"></div>
+        </div>
+
+        <!-- Analiz Sekmeleri -->
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('overview')">Genel Bakış</div>
+            <div class="tab" onclick="showTab('charts')">Grafikler</div>
+            <div class="tab" onclick="showTab('predictions')">Tahminler</div>
+        </div>
+
+        <!-- Genel Bakış -->
+        <div id="overview" class="tab-content active">
+            <div class="stats" id="statsContainer"></div>
+        </div>
+
+        <!-- Grafikler -->
+        <div id="charts" class="tab-content">
+            <div class="chart-container">
+                <canvas id="profitChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="monthlyChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Tahminler -->
+        <div id="predictions" class="tab-content">
+            <div class="section">
+                <h4>İleriye Dönük Tahminler</h4>
+                <div id="predictionResults"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyAIGzwmEB9F7K7KQzsEU5etVWejZ3oSluc",
+            authDomain: "paralayici.firebaseapp.com",
+            projectId: "paralayici",
+            storageBucket: "paralayici.firebasestorage.app",
+            messagingSenderId: "980843550614",
+            appId: "1:980843550614:web:93dd5bda4ddc377b20efb7"
+        };
+
+        let db = null;
+        let profitData = {};
+        let settings = { dailyTarget: 50 };
+
+        // Sayfa yüklendiğinde otomatik başlat
+        window.onload = function() { initializeApp(); };
+
+        function initializeApp() {
+            try {
+                if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
+                db = firebase.database();
+                loadData();
+            } catch (error) {
+                console.error('Firebase bağlantı hatası:', error);
+                alert('Database bağlantısında hata oluştu!');
+            }
+        }
+
+        function loadData() {
+            if (!db) return;
+            
+            // Ayarları yükle
+            db.ref('settings').once('value', (snapshot) => {
+                if (snapshot.exists()) {
+                    settings = snapshot.val();
+                    document.getElementById('dailyTarget').value = settings.dailyTarget;
+                } else {
+                    db.ref('settings').set(settings);
+                    document.getElementById('dailyTarget').value = settings.dailyTarget;
+                }
+            });
+            
+            // Kar verilerini yükle
+            db.ref('profits').once('value', (snapshot) => {
+                profitData = snapshot.val() || {};
+                updateDisplay();
+                checkTodayStatus();
+            });
+        }
+
+        function saveSettings() {
+            const target = parseFloat(document.getElementById('dailyTarget').value) || 50;
+            settings.dailyTarget = target;
+            if (db) { db.ref('settings').set(settings); }
+        }
+
+        function saveTodayProfit() {
+            const today = new Date().toISOString().split('T')[0];
+            const profit = parseFloat(document.getElementById('todayProfit').value) || 0;
+            
+            if (profitData[today]) {
+                document.getElementById('todayStatus').innerHTML = '<span class="error">Bugün için zaten veri girilmiş!</span>';
+                return;
+            }
+            
+            profitData[today] = profit;
+            if (db) { db.ref('profits').set(profitData); }
+            document.getElementById('todayStatus').innerHTML = '<span class="success">Bugünkü kar kaydedildi!</span>';
+            document.getElementById('todayProfit').value = '';
+            updateDisplay();
+        }
+
+        function updateDisplay() {
+            updateStats();
+            updateCharts();
+            updatePredictions();
+        }
+
+        function updateStats() {
+            const dates = Object.keys(profitData).sort();
+            const values = dates.map(date => profitData[date]);
+            const total = values.reduce((a, b) => a + b, 0);
+            const avg = values.length > 0 ? total / values.length : 0;
+            const today = new Date().toISOString().split('T')[0];
+            const todayProfit = profitData[today] || 0;
+            
+            const last7Days = dates.slice(-7).map(date => profitData[date]);
+            const weeklyAvg = last7Days.length > 0 ? last7Days.reduce((a, b) => a + b, 0) / last7Days.length : 0;
+            
+            const currentMonth = new Date().getMonth();
+            const currentYear = new Date().getFullYear();
+            const monthlyData = dates.filter(date => {
+                const d = new Date(date);
+                return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+            }).map(date => profitData[date]);
+            const monthlyTotal = monthlyData.reduce((a, b) => a + b, 0);
+            
+            const targetSuccess = values.filter(v => v >= settings.dailyTarget).length;
+            const targetRate = values.length > 0 ? (targetSuccess / values.length * 100) : 0;
+
+            document.getElementById('statsContainer').innerHTML = `
+                <div class="stat-card"><h4>Toplam Kar</h4><p>${total.toFixed(2)} TL</p></div>
+                <div class="stat-card"><h4>Günlük Ortalama</h4><p>${avg.toFixed(2)} TL</p></div>
+                <div class="stat-card"><h4>Bugünkü Kar</h4><p>${todayProfit.toFixed(2)} TL</p></div>
+                <div class="stat-card"><h4>Haftalık Ortalama</h4><p>${weeklyAvg.toFixed(2)} TL</p></div>
+                <div class="stat-card"><h4>Bu Ay Toplam</h4><p>${monthlyTotal.toFixed(2)} TL</p></div>
+                <div class="stat-card"><h4>Hedef Başarı Oranı</h4><p>%${targetRate.toFixed(1)}</p></div>
+                <div class="stat-card"><h4>Toplam Gün</h4><p>${values.length} gün</p></div>
+                <div class="stat-card"><h4>Günlük Hedef</h4><p>${settings.dailyTarget} TL</p></div>
+            `;
+        }
+
+        function updateCharts() {
+            const dates = Object.keys(profitData).sort().slice(-30);
+            const values = dates.map(date => profitData[date]);
+            
+            // Günlük grafik
+            const dailyCtx = document.getElementById('profitChart').getContext('2d');
+            if (window.dailyChart) { window.dailyChart.destroy(); }
+            window.dailyChart = new Chart(dailyCtx, { type: 'line', data: { labels: dates.map(d => d.split('-').slice(1).join('/')), datasets: [{ label: 'Günlük Kar (TL)', data: values, borderColor: '#007bff', backgroundColor: 'rgba(0,123,255,0.1)', tension: 0.4 }, { label: 'Hedef', data: new Array(dates.length).fill(settings.dailyTarget), borderColor: '#dc3545', borderDash: [5, 5], fill: false }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Son 30 Gün Kar Trendi' } } } });
+            
+            // Aylık özet
+            const monthlyData = {};
+            Object.keys(profitData).forEach(date => {
+                const monthKey = date.substring(0, 7);
+                monthlyData[monthKey] = (monthlyData[monthKey] || 0) + profitData[date];
+            });
+            
+            const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
+            if (window.monthlyChart) { window.monthlyChart.destroy(); }
+            window.monthlyChart = new Chart(monthlyCtx, { type: 'bar', data: { labels: Object.keys(monthlyData).map(m => m.split('-').join('/')), datasets: [{ label: 'Aylık Toplam (TL)', data: Object.values(monthlyData), backgroundColor: '#28a745' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Aylık Kar Toplamları' } } } });
+        }
+
+        function updatePredictions() {
+            const values = Object.values(profitData);
+            if (values.length < 3) {
+                document.getElementById('predictionResults').innerHTML = '<p>Tahmin için daha fazla veri gerekli (en az 3 gün)</p>';
+                return;
+            }
+            
+            const avg = values.reduce((a, b) => a + b, 0) / values.length;
+            const last7Avg = values.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, values.length);
+            
+            const monthlyPrediction = avg * 30;
+            const yearlyPrediction = avg * 365;
+            const targetDays = Math.ceil(1000 / avg);
+            
+            const trend = last7Avg > avg ? 'artış' : last7Avg < avg ? 'azalış' : 'sabit';
+            const trendEmoji = trend === 'artış' ? '📈' : trend === 'azalış' ? '📉' : '➡️';
+            
+            document.getElementById('predictionResults').innerHTML = `
+                <div class="stats">
+                    <div class="stat-card"><h4>Bu Gidişle Aylık</h4><p>${monthlyPrediction.toFixed(0)} TL</p></div>
+                    <div class="stat-card"><h4>Bu Gidişle Yıllık</h4><p>${yearlyPrediction.toFixed(0)} TL</p></div>
+                    <div class="stat-card"><h4>1000 TL İçin</h4><p>${targetDays} gün gerekli</p></div>
+                    <div class="stat-card"><h4>Trend ${trendEmoji}</h4><p>Son hafta ${trend}</p></div>
+                </div>
+                <div class="section">
+                    <h4>Detaylı Analiz</h4>
+                    <p><strong>Günlük ortalama:</strong> ${avg.toFixed(2)} TL</p>
+                    <p><strong>Son hafta ortalama:</strong> ${last7Avg.toFixed(2)} TL</p>
+                    <p><strong>Hedef başarı durumu:</strong> ${avg >= settings.dailyTarget ? '✅ Hedef üstünde' : '❌ Hedef altında'}</p>
+                    <p><strong>Hedeften fark:</strong> ${(avg - settings.dailyTarget).toFixed(2)} TL</p>
+                </div>
+            `;
+        }
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+        }
+
+        function checkTodayStatus() {
+            const today = new Date().toISOString().split('T')[0];
+            if (profitData[today]) {
+                document.getElementById('todayStatus').innerHTML = '<span class="success">Bugün için veri mevcut: ' + profitData[today] + ' TL</span>';
+            }
+        }
+    </script>
+</body>
+</html>
