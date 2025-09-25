@@ -36,6 +36,7 @@
             <h3>Günlük Hedef</h3>
             <input type="number" id="dailyTarget" placeholder="50" style="width:80px;"> TL
             <button onclick="saveSettings()">Kaydet</button>
+            <div id="settingsStatus"></div>
         </div>
 
         <!-- Kar Girişi -->
@@ -81,6 +82,7 @@
     </div>
 
     <script>
+
         const firebaseConfig = {
             apiKey: "AIzaSyAIGzwmEB9F7K7KQzsEU5etVWejZ3oSluc",
             authDomain: "paralayici.firebaseapp.com",
@@ -101,61 +103,156 @@
             try {
                 if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
                 db = firebase.database();
+                showStatus('Firebase bağlantısı başarılı! 🟢', 'success');
                 loadData();
             } catch (error) {
                 console.error('Firebase bağlantı hatası:', error);
-                alert('Database bağlantısında hata oluştu!');
+                showStatus('Firebase bağlantı hatası! Lütfen config bilgilerini kontrol edin. 🔴', 'error');
+            }
+        }
+
+        function showStatus(message, type, elementId = null) {
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+            const statusHTML = `<span class="${className}">${message}</span>`;
+            
+            if (elementId) {
+                document.getElementById(elementId).innerHTML = statusHTML;
+            } else {
+                // Genel status gösterimi için container oluştur
+                if (!document.getElementById('generalStatus')) {
+                    const statusDiv = document.createElement('div');
+                    statusDiv.id = 'generalStatus';
+                    statusDiv.style.cssText = 'position:fixed;top:10px;right:10px;background:white;padding:10px;border-radius:5px;box-shadow:0 2px 10px rgba(0,0,0,0.3);z-index:1000;';
+                    document.body.appendChild(statusDiv);
+                }
+                document.getElementById('generalStatus').innerHTML = statusHTML;
+                setTimeout(() => { document.getElementById('generalStatus').innerHTML = ''; }, 3000);
             }
         }
 
         function loadData() {
-            if (!db) return;
+            if (!db) {
+                showStatus('Database bağlantısı yok! 🔴', 'error');
+                return;
+            }
+            
+            showStatus('Veriler yükleniyor... ⏳', 'info');
             
             // Ayarları yükle
             db.ref('settings').once('value', (snapshot) => {
                 if (snapshot.exists()) {
                     settings = snapshot.val();
                     document.getElementById('dailyTarget').value = settings.dailyTarget;
+                    showStatus('Ayarlar yüklendi ✓', 'success');
                 } else {
-                    db.ref('settings').set(settings);
-                    document.getElementById('dailyTarget').value = settings.dailyTarget;
+                    db.ref('settings').set(settings).then(() => {
+                        document.getElementById('dailyTarget').value = settings.dailyTarget;
+                        showStatus('Varsayılan ayarlar oluşturuldu ✓', 'success');
+                    }).catch(() => {
+                        showStatus('Ayarlar oluşturulamadı! 🔴', 'error');
+                    });
                 }
+            }).catch(() => {
+                showStatus('Ayarlar yüklenemedi! 🔴', 'error');
             });
             
             // Kar verilerini yükle
             db.ref('profits').once('value', (snapshot) => {
                 profitData = snapshot.val() || {};
+                const dataCount = Object.keys(profitData).length;
                 updateDisplay();
                 checkTodayStatus();
+                
+                if (dataCount > 0) {
+                    showStatus(`${dataCount} günlük veri yüklendi ✓`, 'success');
+                } else {
+                    showStatus('Henüz kar verisi yok. İlk girişinizi yapın! 📊', 'info');
+                }
+            }).catch(() => {
+                showStatus('Kar verileri yüklenemedi! 🔴', 'error');
             });
         }
 
         function saveSettings() {
-            const target = parseFloat(document.getElementById('dailyTarget').value) || 50;
-            settings.dailyTarget = target;
-            if (db) { db.ref('settings').set(settings); }
-        }
-
-        function saveTodayProfit() {
-            const today = new Date().toISOString().split('T')[0];
-            const profit = parseFloat(document.getElementById('todayProfit').value) || 0;
-            
-            if (profitData[today]) {
-                document.getElementById('todayStatus').innerHTML = '<span class="error">Bugün için zaten veri girilmiş!</span>';
+            if (!db) {
+                showStatus('Database bağlantısı yok! 🔴', 'error', 'settingsStatus');
                 return;
             }
             
+            const target = parseFloat(document.getElementById('dailyTarget').value);
+            
+            if (!target || target <= 0) {
+                showStatus('Geçerli bir hedef tutarı girin! ⚠️', 'error', 'settingsStatus');
+                return;
+            }
+            
+            settings.dailyTarget = target;
+            showStatus('Kaydediliyor... ⏳', 'info', 'settingsStatus');
+            
+            db.ref('settings').set(settings).then(() => {
+                showStatus(`Günlük hedef ${target} TL olarak kaydedildi! ✓`, 'success', 'settingsStatus');
+                updateDisplay(); // Grafikleri güncelle
+            }).catch((error) => {
+                showStatus('Ayarlar kaydedilemedi! 🔴', 'error', 'settingsStatus');
+                console.error('Ayar kaydetme hatası:', error);
+            });
+        }
+
+        function saveTodayProfit() {
+            if (!db) {
+                showStatus('Database bağlantısı yok! 🔴', 'error', 'todayStatus');
+                return;
+            }
+            
+            const today = new Date().toISOString().split('T')[0];
+            const profit = parseFloat(document.getElementById('todayProfit').value);
+            
+            if (isNaN(profit) || profit < 0) {
+                showStatus('Geçerli bir kar tutarı girin! (0 veya pozitif değer) ⚠️', 'error', 'todayStatus');
+                return;
+            }
+            
+            if (profitData[today]) {
+                const existingProfit = profitData[today];
+                showStatus(`Bugün için zaten ${existingProfit} TL kaydedilmiş! Günde sadece 1 giriş yapabilirsiniz. 🚫`, 'error', 'todayStatus');
+                return;
+            }
+            
+            showStatus('Kaydediliyor... ⏳', 'info', 'todayStatus');
+            
             profitData[today] = profit;
-            if (db) { db.ref('profits').set(profitData); }
-            document.getElementById('todayStatus').innerHTML = '<span class="success">Bugünkü kar kaydedildi!</span>';
-            document.getElementById('todayProfit').value = '';
-            updateDisplay();
+            
+            db.ref('profits').set(profitData).then(() => {
+                showStatus(`${profit} TL bugünkü kar olarak kaydedildi! 💰`, 'success', 'todayStatus');
+                document.getElementById('todayProfit').value = '';
+                updateDisplay();
+                
+                // Hedef kontrolü
+                if (profit >= settings.dailyTarget) {
+                    setTimeout(() => {
+                        showStatus(`🎉 Tebrikler! Günlük hedefi aştınız! (+${(profit - settings.dailyTarget).toFixed(2)} TL)`, 'success');
+                    }, 1000);
+                } else {
+                    setTimeout(() => {
+                        showStatus(`Hedefe ${(settings.dailyTarget - profit).toFixed(2)} TL kaldı 📈`, 'info');
+                    }, 1000);
+                }
+            }).catch((error) => {
+                showStatus('Kar verisi kaydedilemedi! 🔴', 'error', 'todayStatus');
+                console.error('Kar kaydetme hatası:', error);
+            });
         }
 
         function updateDisplay() {
-            updateStats();
-            updateCharts();
-            updatePredictions();
+            try {
+                updateStats();
+                updateCharts();
+                updatePredictions();
+                showStatus('Grafikler güncellendi 📊', 'success');
+            } catch (error) {
+                showStatus('Grafik güncellemesinde hata oluştu! 🔴', 'error');
+                console.error('Display güncelleme hatası:', error);
+            }
         }
 
         function updateStats() {
@@ -257,7 +354,13 @@
         function checkTodayStatus() {
             const today = new Date().toISOString().split('T')[0];
             if (profitData[today]) {
-                document.getElementById('todayStatus').innerHTML = '<span class="success">Bugün için veri mevcut: ' + profitData[today] + ' TL</span>';
+                const todayProfit = profitData[today];
+                const status = todayProfit >= settings.dailyTarget ? 
+                    `✅ Bugün ${todayProfit} TL kaydettiniz (Hedef aşıldı!)` : 
+                    `📊 Bugün ${todayProfit} TL kaydettiniz (Hedefe ${(settings.dailyTarget - todayProfit).toFixed(2)} TL kaldı)`;
+                showStatus(status, 'success', 'todayStatus');
+            } else {
+                showStatus('Bugün henüz kar girişi yapmadınız 📝', 'info', 'todayStatus');
             }
         }
     </script>
