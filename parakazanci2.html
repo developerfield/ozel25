@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kar Takip</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.0.0/firebase-app-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/9.0.0/firebase-database-compat.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; font-size: 14px; padding: 10px; background: #f8f9fa; }
+        .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden; }
+        .header { background: #007bff; color: white; padding: 10px; text-align: center; font-size: 16px; font-weight: bold; }
+        .section { padding: 10px; border-bottom: 1px solid #eee; }
+        .users { display: flex; gap: 5px; justify-content: center; }
+        .user-btn { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; background: #e9ecef; color: #495057; font-size: 12px; }
+        .user-btn.active { background: #007bff; color: white; }
+        .settings { display: flex; align-items: center; gap: 8px; justify-content: center; }
+        .settings input { width: 60px; padding: 4px; border: 1px solid #ddd; border-radius: 3px; text-align: center; }
+        .profit-input { display: flex; align-items: center; gap: 8px; justify-content: center; }
+        .profit-input input { width: 80px; padding: 6px; border: 1px solid #ddd; border-radius: 3px; text-align: center; }
+        button { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; background: #28a745; color: white; font-size: 12px; }
+        button:hover { opacity: 0.9; }
+        .tabs { display: flex; background: #f8f9fa; }
+        .tab { flex: 1; padding: 8px; text-align: center; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px; }
+        .tab.active { border-bottom-color: #007bff; background: white; }
+        .tab-content { display: none; padding: 10px; }
+        .tab-content.active { display: block; }
+        .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+        .stat { background: #f8f9fa; padding: 8px; border-radius: 4px; text-align: center; }
+        .stat-value { font-weight: bold; color: #007bff; font-size: 14px; }
+        .stat-label { font-size: 10px; color: #6c757d; margin-top: 2px; }
+        .chart-container { height: 200px; margin: 10px 0; }
+        .status { font-size: 11px; margin-top: 5px; text-align: center; }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+        .info { color: #17a2b8; }
+        .predictions { font-size: 12px; }
+        .prediction-item { background: #f8f9fa; padding: 6px; margin: 4px 0; border-radius: 3px; display: flex; justify-content: space-between; }
+        .current-user { text-align: center; font-size: 11px; color: #6c757d; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">💰 Kar Takip Paneli</div>
+        
+        <div class="section">
+            <div class="users">
+                <button class="user-btn active" onclick="selectUser(1)">K1</button>
+                <button class="user-btn" onclick="selectUser(2)">K2</button>
+                <button class="user-btn" onclick="selectUser(3)">K3</button>
+                <button class="user-btn" onclick="selectUser(4)">K4</button>
+            </div>
+            <div class="current-user" id="currentUserDisplay">Kullanıcı 1</div>
+        </div>
+
+        <div class="section">
+            <div class="settings">
+                <span>Hedef:</span>
+                <input type="number" id="dailyTarget" placeholder="50">
+                <span>TL</span>
+                <button onclick="saveSettings()">Kaydet</button>
+            </div>
+            <div class="status" id="settingsStatus"></div>
+        </div>
+
+        <div class="section">
+            <div class="profit-input">
+                <span>Bugün:</span>
+                <input type="number" id="todayProfit" placeholder="0" step="0.01">
+                <span>TL</span>
+                <button onclick="saveTodayProfit()">Kaydet</button>
+            </div>
+            <div class="status" id="todayStatus"></div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('overview')">Özet</div>
+            <div class="tab" onclick="showTab('charts')">Grafik</div>
+            <div class="tab" onclick="showTab('predictions')">Tahmin</div>
+        </div>
+
+        <div id="overview" class="tab-content active">
+            <div class="stats" id="statsContainer"></div>
+        </div>
+
+        <div id="charts" class="tab-content">
+            <div class="chart-container">
+                <canvas id="profitChart"></canvas>
+            </div>
+        </div>
+
+        <div id="predictions" class="tab-content">
+            <div class="predictions" id="predictionResults"></div>
+        </div>
+    </div>
+
+    <script>
+        
+        const firebaseConfig = {
+            apiKey: "AIzaSyAIGzwmEB9F7K7KQzsEU5etVWejZ3oSluc",
+            authDomain: "paralayici.firebaseapp.com",
+            projectId: "paralayici",
+            storageBucket: "paralayici.firebasestorage.app",
+            messagingSenderId: "980843550614",
+            appId: "1:980843550614:web:93dd5bda4ddc377b20efb7"
+        };
+
+        let db = null;
+        let profitData = {};
+        let settings = { dailyTarget: 50 };
+        let currentUser = 1;
+
+        window.onload = function() { initApp(); };
+
+        function initApp() {
+            try {
+                if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
+                db = firebase.database();
+                loadData();
+            } catch (error) {
+                showStatus('Firebase bağlantı hatası!', 'error');
+                console.error(error);
+            }
+        }
+
+        function loadData() {
+            if (!db) return;
+            
+            db.ref('settings').once('value').then((snapshot) => {
+                if (snapshot.exists()) { settings = snapshot.val(); }
+                else { db.ref('settings').set(settings); }
+                document.getElementById('dailyTarget').value = settings.dailyTarget;
+                return db.ref('profits').once('value');
+            }).then((snapshot) => {
+                profitData = snapshot.val() || {};
+                updateDisplay();
+                checkTodayStatus();
+                showStatus('Veriler yüklendi ✓', 'success');
+            }).catch((error) => {
+                showStatus('Veri yükleme hatası!', 'error');
+                console.error(error);
+            });
+        }
+
+        function selectUser(userNum) {
+            currentUser = userNum;
+            document.querySelectorAll('.user-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('currentUserDisplay').textContent = `Kullanıcı ${userNum}`;
+            updateDisplay();
+            checkTodayStatus();
+        }
+
+        function saveSettings() {
+            if (!db) { showStatus('DB bağlantısı yok!', 'error', 'settingsStatus'); return; }
+            
+            const target = parseFloat(document.getElementById('dailyTarget').value);
+            if (!target || target <= 0) { showStatus('Geçerli hedef girin!', 'error', 'settingsStatus'); return; }
+            
+            settings.dailyTarget = target;
+            showStatus('Kaydediliyor...', 'info', 'settingsStatus');
+            
+            db.ref('settings').set(settings).then(() => {
+                showStatus(`Hedef ${target} TL kaydedildi!`, 'success', 'settingsStatus');
+                updateDisplay();
+            }).catch(() => { showStatus('Kayıt hatası!', 'error', 'settingsStatus'); });
+        }
+
+        function saveTodayProfit() {
+            if (!db) { showStatus('DB bağlantısı yok!', 'error', 'todayStatus'); return; }
+            
+            const today = new Date().toISOString().split('T')[0].split('-').reverse().join('.');
+            const profit = parseFloat(document.getElementById('todayProfit').value);
+            
+            if (isNaN(profit) || profit < 0) { showStatus('Geçerli tutar girin!', 'error', 'todayStatus'); return; }
+            
+            const todayKey = `${today},${profit},${currentUser}`;
+            const existingEntry = Object.keys(profitData).find(key => {
+                const parts = key.split(',');
+                return parts[0] === today && parts[2] === currentUser.toString();
+            });
+            
+            if (existingEntry) { showStatus('Bugün için veri mevcut!', 'error', 'todayStatus'); return; }
+            
+            showStatus('Kaydediliyor...', 'info', 'todayStatus');
+            profitData[todayKey] = profit;
+            
+            db.ref('profits').set(profitData).then(() => {
+                showStatus(`${profit} TL kaydedildi!`, 'success', 'todayStatus');
+                document.getElementById('todayProfit').value = '';
+                updateDisplay();
+                
+                if (profit >= settings.dailyTarget) { setTimeout(() => { showStatus(`🎉 Hedef aşıldı! (+${(profit - settings.dailyTarget).toFixed(2)} TL)`, 'success'); }, 1000); }
+            }).catch(() => { showStatus('Kayıt hatası!', 'error', 'todayStatus'); });
+        }
+
+        function showStatus(message, type, elementId = null) {
+            const html = `<span class="${type}">${message}</span>`;
+            if (elementId) { document.getElementById(elementId).innerHTML = html; }
+            else {
+                if (!document.getElementById('globalStatus')) {
+                    const div = document.createElement('div');
+                    div.id = 'globalStatus';
+                    div.style.cssText = 'position:fixed;top:10px;right:10px;background:white;padding:8px;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.3);z-index:1000;font-size:12px;';
+                    document.body.appendChild(div);
+                }
+                document.getElementById('globalStatus').innerHTML = html;
+                setTimeout(() => { document.getElementById('globalStatus').innerHTML = ''; }, 2500);
+            }
+        }
+
+        function updateDisplay() {
+            try { updateStats(); updateCharts(); updatePredictions(); }
+            catch (error) { console.error('Display update error:', error); }
+        }
+
+        function getCurrentUserData() {
+            const userData = {};
+            Object.keys(profitData).forEach(key => {
+                const parts = key.split(',');
+                if (parts[2] === currentUser.toString()) { userData[parts[0]] = profitData[key]; }
+            });
+            return userData;
+        }
+
+        function updateStats() {
+            const currentUserData = getCurrentUserData();
+            const values = Object.values(currentUserData);
+            const total = values.reduce((a, b) => a + b, 0);
+            const avg = values.length > 0 ? total / values.length : 0;
+            const today = new Date().toISOString().split('T')[0].split('-').reverse().join('.');
+            
+            const todayEntry = Object.keys(profitData).find(key => {
+                const parts = key.split(',');
+                return parts[0] === today && parts[2] === currentUser.toString();
+            });
+            const todayProfit = todayEntry ? profitData[todayEntry] : 0;
+            
+            const last7Days = values.slice(-7);
+            const weeklyAvg = last7Days.length > 0 ? last7Days.reduce((a, b) => a + b, 0) / last7Days.length : 0;
+            
+            const targetSuccess = values.filter(v => v >= settings.dailyTarget).length;
+            const targetRate = values.length > 0 ? (targetSuccess / values.length * 100) : 0;
+
+            document.getElementById('statsContainer').innerHTML = `
+                <div class="stat"><div class="stat-value">${total.toFixed(0)} TL</div><div class="stat-label">Toplam</div></div>
+                <div class="stat"><div class="stat-value">${avg.toFixed(1)} TL</div><div class="stat-label">Ortalama</div></div>
+                <div class="stat"><div class="stat-value">${todayProfit.toFixed(0)} TL</div><div class="stat-label">Bugün</div></div>
+                <div class="stat"><div class="stat-value">${weeklyAvg.toFixed(1)} TL</div><div class="stat-label">Haftalık Ort.</div></div>
+                <div class="stat"><div class="stat-value">%${targetRate.toFixed(0)}</div><div class="stat-label">Hedef Başarı</div></div>
+                <div class="stat"><div class="stat-value">${values.length}</div><div class="stat-label">Toplam Gün</div></div>
+            `;
+        }
+
+        function updateCharts() {
+            const currentUserData = getCurrentUserData();
+            const sortedDates = Object.keys(currentUserData).sort((a, b) => {
+                const dateA = a.split('.').reverse().join('-');
+                const dateB = b.split('.').reverse().join('-');
+                return new Date(dateA) - new Date(dateB);
+            }).slice(-15);
+            
+            const values = sortedDates.map(date => currentUserData[date]);
+            const labels = sortedDates.map(date => date.split('.').slice(0, 2).join('/'));
+            
+            const ctx = document.getElementById('profitChart').getContext('2d');
+            if (window.chart) { window.chart.destroy(); }
+            
+            window.chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Kar (TL)',
+                        data: values,
+                        borderColor: '#007bff',
+                        backgroundColor: 'rgba(0,123,255,0.1)',
+                        tension: 0.4,
+                        pointRadius: 3
+                    }, {
+                        label: 'Hedef',
+                        data: new Array(sortedDates.length).fill(settings.dailyTarget),
+                        borderColor: '#dc3545',
+                        borderDash: [5, 5],
+                        fill: false,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { font: { size: 10 } } },
+                        y: { ticks: { font: { size: 10 } } }
+                    }
+                }
+            });
+        }
+
+        function updatePredictions() {
+            const currentUserData = getCurrentUserData();
+            const values = Object.values(currentUserData);
+            
+            if (values.length < 3) {
+                document.getElementById('predictionResults').innerHTML = '<div class="prediction-item">En az 3 gün veri gerekli</div>';
+                return;
+            }
+            
+            const avg = values.reduce((a, b) => a + b, 0) / values.length;
+            const last7Avg = values.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, values.length);
+            const monthlyPrediction = avg * 30;
+            const yearlyPrediction = avg * 365;
+            const targetDays = Math.ceil(1000 / avg);
+            const trend = last7Avg > avg ? '📈 Artış' : last7Avg < avg ? '📉 Azalış' : '➡️ Sabit';
+            
+            document.getElementById('predictionResults').innerHTML = `
+                <div class="prediction-item"><span>Bu Gidişle Aylık:</span><strong>${monthlyPrediction.toFixed(0)} TL</strong></div>
+                <div class="prediction-item"><span>Bu Gidişle Yıllık:</span><strong>${yearlyPrediction.toFixed(0)} TL</strong></div>
+                <div class="prediction-item"><span>1000 TL için:</span><strong>${targetDays} gün</strong></div>
+                <div class="prediction-item"><span>Trend:</span><strong>${trend}</strong></div>
+                <div class="prediction-item"><span>Hedef Durumu:</span><strong>${avg >= settings.dailyTarget ? '✅ Üstünde' : '❌ Altında'}</strong></div>
+            `;
+        }
+
+        function checkTodayStatus() {
+            const today = new Date().toISOString().split('T')[0].split('-').reverse().join('.');
+            const todayEntry = Object.keys(profitData).find(key => {
+                const parts = key.split(',');
+                return parts[0] === today && parts[2] === currentUser.toString();
+            });
+            
+            if (todayEntry) {
+                const todayProfit = profitData[todayEntry];
+                const status = todayProfit >= settings.dailyTarget ? 
+                    `✅ ${todayProfit} TL (Hedef aşıldı)` : 
+                    `📊 ${todayProfit} TL (Kalan: ${(settings.dailyTarget - todayProfit).toFixed(1)})`;
+                showStatus(status, 'success', 'todayStatus');
+            } else {
+                showStatus('Bugün henüz giriş yok', 'info', 'todayStatus');
+            }
+        }
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+            if (tabName === 'charts') { setTimeout(updateCharts, 100); }
+        }
+    </script>
+</body>
+</html>
